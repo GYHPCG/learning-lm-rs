@@ -71,7 +71,35 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    // todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    let len = y.size();
+    assert!(len == x.size());
+    
+    // x,y张量的每一个行向量和w向量的长度应该一致
+    let vector_size = w.size();
+    assert!(vector_size * x.shape()[0] == len);
+
+    let _x = x.data();
+    let _y = unsafe { y.data_mut() };
+    let _w = w.data();
+
+    for i in 0..x.shape()[0] {
+        let mut sum_squares = 0.0;
+        // 遍历向量的每一个元素
+        for j in 0..vector_size {
+            let idx = i * vector_size + j;
+            sum_squares += _x[idx] * _x[idx];
+        }
+
+        // 求出分母
+        let rms = (sum_squares / vector_size as f32 + epsilon).sqrt();
+
+        for j in 0..vector_size {
+            let idx = i * vector_size + j;
+            _y[idx] = (_x[idx] * _w[j]) / rms;
+        }
+    }
+
 }
 
 // y = sigmoid(x) * x * y
@@ -83,7 +111,18 @@ pub fn silu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
     // let _y = unsafe { y.data_mut() };
     // let _x = x.data();
 
-    todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    // todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    let len = y.size();
+    assert!(len == x.size());
+
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
+    // silu(y) = silu(x) * y
+    // silu(x) = sigmoid(x) * x
+    for i in 0..len {
+        let sigmoid = 1.0 / (1.0 + (-_x[i]).exp());
+        _y[i] = (_x[i] * sigmoid) * _y[i];
+    }
 }
 
 // C = beta * C + alpha * A @ B^T
