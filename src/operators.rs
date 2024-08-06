@@ -128,7 +128,35 @@ pub fn silu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    let a_data = a.data(); // 获取 A 的数据
+    let b_data = b.data(); // 获取 B 的数据
+    let c_shape = c.shape().clone();
+    let c_data = unsafe { c.data_mut() }; // 获取 C 的可变引用
+
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+    // 检查矩阵形状是否匹配
+    assert_eq!(a_shape[1], b_shape[1], "A's columns must match B's columns when B is transposed");
+    assert_eq!(c_shape[0], a_shape[0], "C's rows must match A's rows");
+    assert_eq!(c_shape[1], b_shape[0], "C's columns must match B's rows when B is transposed");
+
+    let a_rows = a_shape[0];
+    let a_cols = a_shape[1];
+    let b_rows = b_shape[0]; // 实际上是 B 的列数,转置
+    let c_cols = c_shape[1];
+
+    // 遍历 C 的每一个元素
+    for i in 0..a_rows {
+        for j in 0..b_rows {
+            // 计算 A 的第 i 行和 B^T 的第 j 行的点积
+            let mut sum = 0.0;
+            for k in 0..a_cols {
+                sum += a_data[i * a_cols + k] * b_data[j * a_cols + k];
+            }
+            // 更新 C 矩阵
+            c_data[i * c_cols + j] = beta * c_data[i * c_cols + j] + alpha * sum;
+        }
+    }
 }
 
 // Dot product of two tensors (treated as vectors)
