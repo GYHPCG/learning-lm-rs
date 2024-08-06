@@ -171,9 +171,7 @@ fn mlp(
     matmul_transb(gate, 0.0, hidden_states, w_gate, 1.0);
     matmul_transb(up, 0.0, hidden_states, w_up, 1.0);
     silu(up, gate);
-    // hidden_states = up;
     matmul_transb(hidden_states, 0.0, up, w_down, 1.0);
-   
     let res_size = residual.size();
     let res_data = unsafe{residual.data_mut()};
     let hid_data = hidden_states.data();
