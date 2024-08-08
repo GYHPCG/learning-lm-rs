@@ -3,7 +3,7 @@ use std::vec;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
-use crate::operators::{self as OP, rms_norm, matmul_transb,silu};
+use crate::operators::{self as OP, masked_softmax, matmul_transb, rms_norm, silu};
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
@@ -30,6 +30,12 @@ impl Llama<f32> {
         let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();
         let model_file = std::fs::read(model_dir.as_ref().join("model.safetensors")).unwrap();
         let safetensor = SafeTensors::deserialize(&model_file).unwrap();
+
+        // 打印出safetensors中所有张量的名字
+        println!("safetensors tensors: ------------");
+        for (name, _) in safetensor.tensors() {
+            println!("{}", name);
+        }
         let params = LLamaParams::from_safetensors(&safetensor, &config);
 
         Self {
@@ -101,10 +107,65 @@ impl Llama<f32> {
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
-            todo!("self_attention(...)");
-            todo!("down_proj matmul and add residual");
+            self_attention(
+                &mut hidden_states,
+                &mut att_scores,
+                q,
+                k,
+                v,
+                self.n_kv_h,
+                n_groups,
+                seq_len,
+                total_seq_len,
+                self.dqkv,
+            );
 
-            todo!("mlp(...)");
+            // 5. Down projection and residual connection
+            let mut down_proj_buf = Tensor::<f32>::default(&vec![seq_len, self.d]);
+            OP::matmul_transb(
+                &mut down_proj_buf,
+                0.,
+                &hidden_states,
+                &self.params.wo[layer],
+                1.0,
+            );
+            //   residual = residual.add(&down_proj_buf); // Add residual connection
+            let res_size = residual.size();
+            let res_data = unsafe { residual.data_mut() };
+            let down_proj_data = down_proj_buf.data();
+            for i in 0..res_size {
+                res_data[i] += down_proj_data[i];
+            }
+            // todo!("self_attention(...)");
+            // todo!("down_proj matmul and add residual");
+
+            // todo!("mlp(...)");
+            // OP::rms_norm(
+            //     &mut hidden_states,
+            //     &residual,
+            //     &self.params.rms_ffn_w[layer],
+            //     self.eps,
+            // );
+            // OP::matmul_transb(&mut gate_buf, 0., &hidden_states, &self.params.w_gate[layer], 1.0);
+            // OP::matmul_transb(&mut up_buf, 0., &hidden_states, &self.params.w_up[layer], 1.0);
+            // OP::silu(&mut gate_buf, &gate_buf); // Apply SiLU activation
+            // hidden_states = gate_buf.mul(&up_buf); // Element-wise multiplication
+
+            // let mut down_proj_buf = Tensor::<f32>::default(&vec![seq_len, self.d]);
+            // OP::matmul_transb(&mut down_proj_buf, 0., &hidden_states, &self.params.w_down[layer], 1.0);
+            // residual = residual.add(&down_proj_buf); // A
+            // mlp(&mut residual, &mut hidden_states, &mut gate_buf, &mut up_buf, w_up, w_down, w_gate, rms_w, eps)
+            mlp(
+                &mut residual,
+                &mut hidden_states,
+                &mut gate_buf,
+                &mut up_buf,
+                &self.params.w_up[layer],
+                &self.params.w_down[layer],
+                &self.params.w_gate[layer],
+                &self.params.rms_ffn_w[layer],
+                self.eps,
+            );
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
@@ -132,13 +193,67 @@ impl Llama<f32> {
         top_p: f32,
         top_k: u32,
         temperature: f32,
-    ) -> Vec<u32>{
-        let mut result = Vec::<u32>::new();
-        
-        todo!("实现文本生成");
-        
+    ) -> Vec<u32> {
+        // let mut result = Vec::<u32>::new();
+        let mut result = token_ids.to_vec();
+
+        // todo!("实现文本生成");
+        let mut cache = KVCache::new(self.n_layers, max_len,self.n_kv_h * self.dqkv,self.max_seq_len);
+
+        for _ in token_ids.len()..max_len {
+            let tensor = Tensor::new(result.clone(), &vec![result.len()]);
+            // Get the logits for the next token
+            let logits = self.forward(&tensor, &mut cache);
+    
+            // Apply temperature scaling
+            // let mut logits = logits / temperature;
+    
+            // Apply top-k and top-p filtering
+            let next_token = sample_next_token(&logits, top_k, top_p);
+    
+            // Append the next token to the result
+            result.push(next_token);
+    
+            // Break if the end-of-sequence token is generated
+            if next_token == self.eos_token_id {
+                break;
+            }
+        }
+
         result
     }
+}
+
+use rand::prelude::*;
+use rand_distr::{Distribution, WeightedIndex};
+
+fn sample_next_token(
+    logits: &Tensor<f32>,
+    top_k: u32,
+    top_p: f32,
+) -> u32 {
+    let logits_data = logits.data();
+    let mut sorted_indices: Vec<usize> = (0..logits_data.len()).collect();
+    sorted_indices.sort_by(|&i, &j| logits_data[j].partial_cmp(&logits_data[i]).unwrap());
+
+    let mut cumulative_probs = 0.0;
+    let mut candidates = vec![];
+
+    for &i in sorted_indices.iter().take(top_k as usize) {
+        candidates.push((i, logits_data[i].exp()));
+        cumulative_probs += logits_data[i].exp();
+
+        if cumulative_probs >= top_p {
+            break;
+        }
+    }
+
+    let probs: Vec<f32> = candidates.iter().map(|&(_, p)| p).collect();
+    let dist = WeightedIndex::new(&probs).unwrap();
+    let mut rng = thread_rng();
+    let sampled_index = dist.sample(&mut rng);
+
+    candidates[sampled_index].0 as u32
 }
 
 fn self_attention(
@@ -153,7 +268,65 @@ fn self_attention(
     total_seq_len: usize,
     dqkv: usize,
 ) {
-    todo!("Implement self_attention");
+    for g in 0..n_groups {
+        for h in 0..n_kv_h {
+            let q_idx_start = g * n_kv_h * dqkv + h * dqkv;
+            let k_idx_start = h * dqkv;
+
+            // 获取 q 和 k 的子张量
+            let q_sub = q.slice(q_idx_start, &vec![seq_len, dqkv]);
+            let k_sub = k.slice(k_idx_start, &vec![total_seq_len, dqkv]);
+
+            // 计算 Q 和 K 的点积，存储到 att_scores 中
+            let mut att_scores_sub = Tensor::new(
+                vec![0.0; seq_len * total_seq_len],
+                &vec![seq_len, total_seq_len],
+            );
+            matmul_transb(&mut att_scores_sub, 0.0, &q_sub, &k_sub, 1.0);
+
+            // 将计算结果拷贝到 att_scores 中
+            let att_scores_data = unsafe { att_scores.data_mut() };
+            let att_scores_sub_data = att_scores_sub.data();
+
+            for i in 0..seq_len {
+                for j in 0..total_seq_len {
+                    att_scores_data[h * seq_len * total_seq_len + i * total_seq_len + j] =
+                        att_scores_sub_data[i * total_seq_len + j];
+                }
+            }
+        }
+    }
+
+    // 2. 对注意力分数应用 Masked Softmax
+    masked_softmax(att_scores);
+
+    // 3. 计算上下文向量
+    for g in 0..n_groups {
+        for h in 0..n_kv_h {
+            let v_idx_start = h * dqkv;
+
+            // 获取 att_scores 和 v 的子张量
+            let att_scores_sub =
+                att_scores.slice(h * seq_len * total_seq_len, &vec![seq_len, total_seq_len]);
+            let v_sub = v.slice(v_idx_start, &vec![total_seq_len, dqkv]);
+
+            // 计算 att_scores 和 v 的矩阵乘积，存储到 hidden_states 中
+            let mut hidden_states_sub =
+                Tensor::new(vec![0.0; seq_len * dqkv], &vec![seq_len, dqkv]);
+            matmul_transb(&mut hidden_states_sub, 0.0, &att_scores_sub, &v_sub, 1.0);
+
+            // 将计算结果拷贝到 hidden_states 中
+            let hidden_states_data = unsafe { hidden_states.data_mut() };
+            let hidden_states_sub_data = hidden_states_sub.data();
+
+            for i in 0..seq_len {
+                for j in 0..dqkv {
+                    hidden_states_data[g * n_kv_h * dqkv + h * dqkv + i * dqkv + j] =
+                        hidden_states_sub_data[i * dqkv + j];
+                }
+            }
+        }
+    }
 }
 
 fn mlp(
@@ -172,8 +345,9 @@ fn mlp(
     matmul_transb(up, 0.0, hidden_states, w_up, 1.0);
     silu(up, gate);
     matmul_transb(hidden_states, 0.0, up, w_down, 1.0);
+
     let res_size = residual.size();
-    let res_data = unsafe{residual.data_mut()};
+    let res_data = unsafe { residual.data_mut() };
     let hid_data = hidden_states.data();
     for i in 0..res_size {
         res_data[i] += hid_data[i];
@@ -220,8 +394,8 @@ pub fn test_mlp() {
 
 #[test]
 pub fn test_load_safetensors() {
-    use std::path::PathBuf;
     use crate::tensor::float_eq;
+    use std::path::PathBuf;
     let project_dir = env!("CARGO_MANIFEST_DIR");
     let model_dir = PathBuf::from(project_dir).join("models").join("story");
     let model = Llama::from_safetensors(model_dir);
@@ -233,17 +407,55 @@ pub fn test_load_safetensors() {
     assert_eq!(model.dqkv, 16);
     assert_eq!(model.di, 384);
 
-    assert!(float_eq(&model.params.embedding_table.data()[50], &0.14453125, 1e-6));
-    assert_eq!(model.params.lm_head.data()[10], model.params.embedding_table.data()[10]);
-    assert!(float_eq(&model.params.rms_att_w[0].data()[10], &0.18652344, 1e-6));
-    assert!(float_eq(&model.params.rms_ffn_w[1].data()[10], &0.32421875, 1e-6));
-    assert!(float_eq(&model.params.rms_out_w.data()[100], &0.73046875, 1e-6));
-    assert!(float_eq(&model.params.w_down[0].data()[100], &-0.0625, 1e-6));
+    assert!(float_eq(
+        &model.params.embedding_table.data()[50],
+        &0.14453125,
+        1e-6
+    ));
+    assert_eq!(
+        model.params.lm_head.data()[10],
+        model.params.embedding_table.data()[10]
+    );
+    assert!(float_eq(
+        &model.params.rms_att_w[0].data()[10],
+        &0.18652344,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.rms_ffn_w[1].data()[10],
+        &0.32421875,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.rms_out_w.data()[100],
+        &0.73046875,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.w_down[0].data()[100],
+        &-0.0625,
+        1e-6
+    ));
     assert!(float_eq(&model.params.w_up[0].data()[100], &1.46875, 1e-6));
-    assert!(float_eq(&model.params.w_gate[1].data()[100], &0.296875, 1e-6));
-    assert!(float_eq(&model.params.wq[1].data()[100], &0.032226563, 1e-6));
-    assert!(float_eq(&model.params.wk[1].data()[100], &-0.21386719, 1e-6));
-    assert!(float_eq(&model.params.wv[0].data()[100], &0.041015625, 1e-6));
+    assert!(float_eq(
+        &model.params.w_gate[1].data()[100],
+        &0.296875,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.wq[1].data()[100],
+        &0.032226563,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.wk[1].data()[100],
+        &-0.21386719,
+        1e-6
+    ));
+    assert!(float_eq(
+        &model.params.wv[0].data()[100],
+        &0.041015625,
+        1e-6
+    ));
     assert!(float_eq(&model.params.wo[0].data()[100], &0.01965332, 1e-6));
-
 }
