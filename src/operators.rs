@@ -125,8 +125,49 @@ pub fn silu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
     }
 }
 
+pub fn silu1(y: &mut Tensor<f32>) {
+    let len = y.size();
+    let _y = unsafe { y.data_mut() };
+    // silu(y) = silu(x) * y
+    // silu(x) = sigmoid(x) * x
+    for i in 0..len {
+        let sigmoid = 1.0 / (1.0 + (-_y[i]).exp());
+        _y[i] = _y[i] * sigmoid;
+    }
+}
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
+// pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
+//     let a_data = a.data(); // 获取 A 的数据
+//     let b_data = b.data(); // 获取 B 的数据
+//     let c_shape = c.shape().clone();
+//     let c_data = unsafe { c.data_mut() }; // 获取 C 的可变引用
+
+//     let a_shape = a.shape();
+//     let b_shape = b.shape();
+//     // 检查矩阵形状是否匹配
+//     assert_eq!(a_shape[1], b_shape[1], "A's columns must match B's columns when B is transposed");
+//     assert_eq!(c_shape[0], a_shape[0], "C's rows must match A's rows");
+//     assert_eq!(c_shape[1], b_shape[0], "C's columns must match B's rows when B is transposed");
+
+//     let a_rows = a_shape[0];
+//     let a_cols = a_shape[1];
+//     let b_rows = b_shape[0]; // 实际上是 B 的列数,转置
+//     let c_cols = c_shape[1];
+
+//     // 遍历 C 的每一个元素
+//     for i in 0..a_rows {
+//         for j in 0..b_rows {
+//             // 计算 A 的第 i 行和 B^T 的第 j 行的点积
+//             let mut sum = 0.0;
+//             for k in 0..a_cols {
+//                 sum += a_data[i * a_cols + k] * b_data[j * a_cols + k];
+//             }
+//             // 更新 C 矩阵
+//             c_data[i * c_cols + j] = beta * c_data[i * c_cols + j] + alpha * sum;
+//         }
+//     }
+// }
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
     let a_data = a.data(); // 获取 A 的数据
     let b_data = b.data(); // 获取 B 的数据
@@ -135,26 +176,41 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
 
     let a_shape = a.shape();
     let b_shape = b.shape();
-    // 检查矩阵形状是否匹配
-    assert_eq!(a_shape[1], b_shape[1], "A's columns must match B's columns when B is transposed");
-    assert_eq!(c_shape[0], a_shape[0], "C's rows must match A's rows");
-    assert_eq!(c_shape[1], b_shape[0], "C's columns must match B's rows when B is transposed");
 
-    let a_rows = a_shape[0];
-    let a_cols = a_shape[1];
-    let b_rows = b_shape[0]; // 实际上是 B 的列数,转置
-    let c_cols = c_shape[1];
+    // 确定 a 和 b 的形状，并处理广播
+    let a_rows = a_shape[a_shape.len() - 2];
+    let a_cols = a_shape[a_shape.len() - 1];
+    let b_rows = b_shape[b_shape.len() - 2];
+    let b_cols = b_shape[b_shape.len() - 1];
 
-    // 遍历 C 的每一个元素
-    for i in 0..a_rows {
-        for j in 0..b_rows {
-            // 计算 A 的第 i 行和 B^T 的第 j 行的点积
-            let mut sum = 0.0;
-            for k in 0..a_cols {
-                sum += a_data[i * a_cols + k] * b_data[j * a_cols + k];
+    assert_eq!(a_cols, b_cols, "A's columns must match B's columns when B is transposed");
+    assert_eq!(c_shape[c_shape.len() - 2], a_rows, "C's rows must match A's rows");
+    assert_eq!(c_shape[c_shape.len() - 1], b_rows, "C's columns must match B's rows when B is transposed");
+
+    // 处理批次维度
+    let batch_size = a_shape[..a_shape.len() - 2]
+        .iter()
+        .zip(b_shape[..b_shape.len() - 2].iter())
+        .map(|(a_dim, b_dim)| a_dim.max(b_dim))
+        .product();
+
+    // 遍历批次
+    for batch_idx in 0..batch_size {
+        let a_offset = batch_idx * a_rows * a_cols;
+        let b_offset = batch_idx * b_rows * b_cols;
+        let c_offset = batch_idx * a_rows * b_rows;
+
+        // 遍历 C 的每一个元素
+        for i in 0..a_rows {
+            for j in 0..b_rows {
+                // 计算 A 的第 i 行和 B^T 的第 j 行的点积
+                let mut sum = 0.0;
+                for k in 0..a_cols {
+                    sum += a_data[a_offset + i * a_cols + k] * b_data[b_offset + j * b_cols + k];
+                }
+                // 更新 C 矩阵
+                c_data[c_offset + i * b_rows + j] = beta * c_data[c_offset + i * b_rows + j] + alpha * sum;
             }
-            // 更新 C 矩阵
-            c_data[i * c_cols + j] = beta * c_data[i * c_cols + j] + alpha * sum;
         }
     }
 }

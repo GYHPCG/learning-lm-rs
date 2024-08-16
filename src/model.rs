@@ -3,7 +3,7 @@ use std::vec;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
-use crate::operators::{self as OP, masked_softmax, matmul_transb, rms_norm, silu};
+use crate::operators::{self as OP, masked_softmax, matmul_transb, rms_norm, silu,silu1};
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
@@ -103,7 +103,7 @@ impl Llama<f32> {
                 past_seq_len,
                 self.rope_theta,
             );
-
+             // readme的self-attention
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
 
@@ -111,8 +111,8 @@ impl Llama<f32> {
                 &mut hidden_states,
                 &mut att_scores,
                 q,
-                k,
-                v,
+                full_k,
+                full_v,
                 self.n_kv_h,
                 n_groups,
                 seq_len,
@@ -343,7 +343,7 @@ fn mlp(
     rms_norm(hidden_states, residual, rms_w, eps);
     matmul_transb(gate, 0.0, hidden_states, w_gate, 1.0);
     matmul_transb(up, 0.0, hidden_states, w_up, 1.0);
-    silu(up, gate);
+    silu(up,gate);
     matmul_transb(hidden_states, 0.0, up, w_down, 1.0);
 
     let res_size = residual.size();
