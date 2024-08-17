@@ -14,9 +14,13 @@ fn main() {
     let llama = model::Llama::<f32>::from_safetensors(&model_dir);
     let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json")).unwrap();
     let input = "Once upon a time";
+    println!("Test: {}", input);
     let binding = tokenizer.encode(input, true).unwrap();
+    println!("binding over");
     let input_ids = binding.get_ids();
-    print!("\n{}", input);
+    println!("input_ids over");
+    print!("\n{}\n", input);
+    println!("input_ids: {:?}",input_ids);
     let output_ids = llama.generate(
         input_ids,
         500,
@@ -24,5 +28,6 @@ fn main() {
         4,
         1.,
     );
-    println!("{}", tokenizer.decode(&output_ids, true).unwrap());
+    // println!("output_ids over");
+    // println!("{}", tokenizer.decode(&output_ids, true).unwrap());
 }

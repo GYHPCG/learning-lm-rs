@@ -3,7 +3,7 @@ use std::vec;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
-use crate::operators::{self as OP, masked_softmax, matmul_transb, rms_norm, silu,silu1};
+use crate::operators::{self as OP, masked_softmax, matmul_transb, rms_norm, silu, silu1};
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::SafeTensors;
@@ -74,7 +74,7 @@ impl Llama<f32> {
             Tensor::<f32>::default(&vec![self.n_kv_h, n_groups, seq_len, total_seq_len]);
         let mut gate_buf = Tensor::<f32>::default(&vec![seq_len, self.di]);
         let mut up_buf = Tensor::<f32>::default(&vec![seq_len, self.di]);
-
+        println!("embedding is ok");
         // Computation Starts Here
         // Embedding lookup
         OP::gather(&mut residual, input, &self.params.embedding_table);
@@ -87,12 +87,26 @@ impl Llama<f32> {
                 self.eps,
             );
 
+            println!("rms_norm is ok");
+
             let q = (&mut q_buf).reshape(&vec![seq_len, self.n_q_h * self.dqkv]); // (seq, n_h * dqkv)
+            
+            println!("q is ok");
+
             let k = &mut cache.k_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
+            
+            println!("k is ok");
+            
             let v = &mut cache.v_cache(layer, past_seq_len); // (seq, n_kv_h * dqkv)
+            
+            println!("matmul_transb is ok");
+
             OP::matmul_transb(q, 0., &hidden_states, &self.params.wq[layer], 1.0);
             OP::matmul_transb(k, 0., &hidden_states, &self.params.wk[layer], 1.0);
             OP::matmul_transb(v, 0., &hidden_states, &self.params.wv[layer], 1.0);
+            
+            println!("rope is ok");
+
             OP::rope(
                 q.reshape(&vec![seq_len, self.n_q_h, self.dqkv]),
                 past_seq_len,
@@ -103,9 +117,11 @@ impl Llama<f32> {
                 past_seq_len,
                 self.rope_theta,
             );
-             // readme的self-attention
+            // readme的self-attention
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
+
+            println!("self_attention is ok");
 
             self_attention(
                 &mut hidden_states,
@@ -136,25 +152,7 @@ impl Llama<f32> {
             for i in 0..res_size {
                 res_data[i] += down_proj_data[i];
             }
-            // todo!("self_attention(...)");
-            // todo!("down_proj matmul and add residual");
 
-            // todo!("mlp(...)");
-            // OP::rms_norm(
-            //     &mut hidden_states,
-            //     &residual,
-            //     &self.params.rms_ffn_w[layer],
-            //     self.eps,
-            // );
-            // OP::matmul_transb(&mut gate_buf, 0., &hidden_states, &self.params.w_gate[layer], 1.0);
-            // OP::matmul_transb(&mut up_buf, 0., &hidden_states, &self.params.w_up[layer], 1.0);
-            // OP::silu(&mut gate_buf, &gate_buf); // Apply SiLU activation
-            // hidden_states = gate_buf.mul(&up_buf); // Element-wise multiplication
-
-            // let mut down_proj_buf = Tensor::<f32>::default(&vec![seq_len, self.d]);
-            // OP::matmul_transb(&mut down_proj_buf, 0., &hidden_states, &self.params.w_down[layer], 1.0);
-            // residual = residual.add(&down_proj_buf); // A
-            // mlp(&mut residual, &mut hidden_states, &mut gate_buf, &mut up_buf, w_up, w_down, w_gate, rms_w, eps)
             mlp(
                 &mut residual,
                 &mut hidden_states,
@@ -195,31 +193,55 @@ impl Llama<f32> {
         temperature: f32,
     ) -> Vec<u32> {
         // let mut result = Vec::<u32>::new();
+        // let mut result = token_ids.to_vec();
+
+        // // todo!("实现文本生成");
+        // let mut cache = KVCache::new(self.n_layers, max_len,self.n_kv_h * self.dqkv,self.max_seq_len);
+        // println!("cache is ok");
+        // for _ in token_ids.len()..max_len {
+        //     let tensor = Tensor::new(result.clone(), &vec![result.len()]);
+        //     println!("new tnesor is ok");
+        //     // Get the logits for the next token
+        //     let logits = self.forward(&tensor, &mut cache);
+        //     println!("logits is ok");
+        //     // Apply temperature scaling
+        //     // let mut logits = logits / temperature;
+
+        //     // Apply top-k and top-p filtering
+        //     let next_token = sample_next_token(&logits, top_k, top_p);
+
+        //     // Append the next token to the result
+        //     result.push(next_token);
+
+        //     // Break if the end-of-sequence token is generated
+        //     if next_token == self.eos_token_id {
+        //         break;
+        //     }
+        // }
         let mut result = token_ids.to_vec();
-
-        // todo!("实现文本生成");
-        let mut cache = KVCache::new(self.n_layers, max_len,self.n_kv_h * self.dqkv,self.max_seq_len);
-
-        for _ in token_ids.len()..max_len {
-            let tensor = Tensor::new(result.clone(), &vec![result.len()]);
-            // Get the logits for the next token
-            let logits = self.forward(&tensor, &mut cache);
-    
-            // Apply temperature scaling
-            // let mut logits = logits / temperature;
-    
-            // Apply top-k and top-p filtering
-            let next_token = sample_next_token(&logits, top_k, top_p);
-    
-            // Append the next token to the result
+        let mut input_tensor = Tensor::new(token_ids.to_vec(), &vec![token_ids.len()]);
+        let mut cache = KVCache::new(
+            self.n_layers,
+            max_len,
+            self.n_kv_h * self.dqkv,
+            self.max_seq_len,
+        ); // 初始化缓存
+        println!("cache is ok");
+        for _ in 0..max_len {
+            let logits = self.forward(&input_tensor, &mut cache);
+            print!("logits is ok");
+            // 使用 temperature, top_k, top_p 进行采样
+            let next_token = sample_next_token(&logits, top_k, top_p, temperature);
             result.push(next_token);
-    
-            // Break if the end-of-sequence token is generated
+
+            // 更新输入张量，仅使用最新生成的 token
+            input_tensor = Tensor::new(vec![next_token], &vec![1]);
+
+            // 假如 next_token 是结束标记，则退出循环
             if next_token == self.eos_token_id {
                 break;
             }
         }
-
         result
     }
 }
@@ -227,11 +249,7 @@ impl Llama<f32> {
 use rand::prelude::*;
 use rand_distr::{Distribution, WeightedIndex};
 
-fn sample_next_token(
-    logits: &Tensor<f32>,
-    top_k: u32,
-    top_p: f32,
-) -> u32 {
+fn sample_next_token(logits: &Tensor<f32>, top_k: u32, top_p: f32, temperature: f32) -> u32 {
     let logits_data = logits.data();
     let mut sorted_indices: Vec<usize> = (0..logits_data.len()).collect();
     sorted_indices.sort_by(|&i, &j| logits_data[j].partial_cmp(&logits_data[i]).unwrap());
@@ -343,7 +361,7 @@ fn mlp(
     rms_norm(hidden_states, residual, rms_w, eps);
     matmul_transb(gate, 0.0, hidden_states, w_gate, 1.0);
     matmul_transb(up, 0.0, hidden_states, w_up, 1.0);
-    silu(up,gate);
+    silu(up, gate);
     matmul_transb(hidden_states, 0.0, up, w_down, 1.0);
 
     let res_size = residual.size();
