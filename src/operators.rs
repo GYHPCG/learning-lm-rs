@@ -70,36 +70,63 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
     }
 }
 
-pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    // todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
-    let len = y.size();
-    assert!(len == x.size());
+// pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
+//     // todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+//     let len = y.size();
+//     assert!(len == x.size());
     
-    // x,y张量的每一个行向量和w向量的长度应该一致
-    let vector_size = w.size();
-    assert!(vector_size * x.shape()[0] == len);
+//     // x,y张量的每一个行向量和w向量的长度应该一致
+//     let vector_size = w.size();
+//     assert!(vector_size * x.shape()[0] == len);
 
-    let _x = x.data();
+//     let _x = x.data();
+//     let _y = unsafe { y.data_mut() };
+//     let _w = w.data();
+
+//     for i in 0..x.shape()[0] {
+//         let mut sum_squares = 0.0;
+//         // 遍历向量的每一个元素
+//         for j in 0..vector_size {
+//             let idx = i * vector_size + j;
+//             sum_squares += _x[idx] * _x[idx];
+//         }
+
+//         // 求出分母
+//         let rms = (sum_squares / vector_size as f32 + epsilon).sqrt();
+
+//         for j in 0..vector_size {
+//             let idx = i * vector_size + j;
+//             _y[idx] = (_x[idx] * _w[j]) / rms;
+//         }
+//     }
+
+// }
+
+pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
+    let shape = y.shape().clone();
+    let len = shape.len();
+    let last_dim = len - 1;
     let _y = unsafe { y.data_mut() };
+    let _x = x.data();
     let _w = w.data();
 
-    for i in 0..x.shape()[0] {
-        let mut sum_squares = 0.0;
-        // 遍历向量的每一个元素
-        for j in 0..vector_size {
-            let idx = i * vector_size + j;
-            sum_squares += _x[idx] * _x[idx];
-        }
-
-        // 求出分母
-        let rms = (sum_squares / vector_size as f32 + epsilon).sqrt();
-
-        for j in 0..vector_size {
-            let idx = i * vector_size + j;
-            _y[idx] = (_x[idx] * _w[j]) / rms;
-        }
+    let mut ext_loop = 1;
+    for i in 0..(shape.len() - 1) {
+        ext_loop *= shape[i];
     }
+    let inner_size = shape[last_dim];
 
+    for i in 0..ext_loop {
+        let mut xp = 0f32;
+        for j in 0..shape[last_dim] {
+            xp += _x[i * inner_size + j] * _x[i * inner_size + j];
+            _y[i * inner_size + j] = _w[j] * _x[i * inner_size + j];
+        }
+        xp = f32::sqrt(xp / inner_size as f32 + epsilon);
+        for j in 0..shape[last_dim] {
+            _y[i * inner_size + j] /= xp;
+        }   
+    }
 }
 
 // y = sigmoid(x) * x * y
